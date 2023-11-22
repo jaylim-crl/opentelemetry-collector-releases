@@ -25,14 +25,11 @@ import (
 	"strings"
 
 	"github.com/goreleaser/goreleaser/pkg/config"
-	"github.com/goreleaser/nfpm/v2/files"
 )
 
-const ArmArch = "arm"
-
 var (
-	ImagePrefixes = []string{"otel", "ghcr.io/open-telemetry/opentelemetry-collector-releases"}
-	Architectures = []string{"386", "amd64", "arm", "arm64", "ppc64le", "s390x"}
+	ImagePrefixes = []string{"otel"}
+	Architectures = []string{"amd64", "arm64"}
 	ArmVersions   = []string{"7"}
 )
 
@@ -45,7 +42,6 @@ func Generate(imagePrefixes []string, dists []string) config.Project {
 
 		Builds:          Builds(dists),
 		Archives:        Archives(dists),
-		NFPMs:           Packages(dists),
 		Dockers:         DockerImages(imagePrefixes, dists),
 		DockerManifests: DockerManifests(imagePrefixes, dists),
 	}
@@ -70,17 +66,9 @@ func Build(dist string) config.Build {
 			Flags:   []string{"-trimpath"},
 			Ldflags: []string{"-s", "-w"},
 		},
-		Goos:   []string{"darwin", "linux", "windows"},
+		Goos:   []string{"darwin", "linux"},
 		Goarch: Architectures,
 		Goarm:  ArmVersions,
-		Ignore: []config.IgnoredBuild{
-			{Goos: "darwin", Goarch: "386"},
-			{Goos: "darwin", Goarch: "arm"},
-			{Goos: "darwin", Goarch: "s390x"},
-			{Goos: "windows", Goarch: "arm"},
-			{Goos: "windows", Goarch: "arm64"},
-			{Goos: "windows", Goarch: "s390x"},
-		},
 	}
 }
 
@@ -101,64 +89,10 @@ func Archive(dist string) config.Archive {
 	}
 }
 
-func Packages(dists []string) (r []config.NFPM) {
-	for _, dist := range dists {
-		r = append(r, Package(dist))
-	}
-	return
-}
-
-// Package configures goreleaser to build a system package.
-// https://goreleaser.com/customization/nfpm/
-func Package(dist string) config.NFPM {
-	return config.NFPM{
-		ID:      dist,
-		Builds:  []string{dist},
-		Formats: []string{"apk", "deb", "rpm"},
-
-		License:     "Apache 2.0",
-		Description: fmt.Sprintf("OpenTelemetry Collector - %s", dist),
-		Maintainer:  "The OpenTelemetry Collector maintainers <cncf-opentelemetry-maintainers@lists.cncf.io>",
-
-		NFPMOverridables: config.NFPMOverridables{
-			PackageName: dist,
-			Scripts: config.NFPMScripts{
-				PreInstall:  path.Join("distributions", dist, "preinstall.sh"),
-				PostInstall: path.Join("distributions", dist, "postinstall.sh"),
-				PreRemove:   path.Join("distributions", dist, "preremove.sh"),
-			},
-			Contents: files.Contents{
-				{
-					Source:      path.Join("distributions", dist, fmt.Sprintf("%s.service", dist)),
-					Destination: path.Join("/lib", "systemd", "system", fmt.Sprintf("%s.service", dist)),
-				},
-				{
-					Source:      path.Join("distributions", dist, fmt.Sprintf("%s.conf", dist)),
-					Destination: path.Join("/etc", dist, fmt.Sprintf("%s.conf", dist)),
-					Type:        "config|noreplace",
-				},
-				{
-					Source:      path.Join("configs", fmt.Sprintf("%s.yaml", dist)),
-					Destination: path.Join("/etc", dist, "config.yaml"),
-					Type:        "config",
-				},
-			},
-		},
-	}
-}
-
 func DockerImages(imagePrefixes, dists []string) (r []config.Docker) {
 	for _, dist := range dists {
-		for _, arch := range Architectures {
-			switch arch {
-			case ArmArch:
-				for _, vers := range ArmVersions {
-					r = append(r, DockerImage(imagePrefixes, dist, arch, vers))
-				}
-			default:
-				r = append(r, DockerImage(imagePrefixes, dist, arch, ""))
-			}
-		}
+		// Only support amd64 for Docker images.
+		r = append(r, DockerImage(imagePrefixes, dist, "amd64", ""))
 	}
 	return
 }
@@ -166,7 +100,7 @@ func DockerImages(imagePrefixes, dists []string) (r []config.Docker) {
 // DockerImage configures goreleaser to build a container image.
 // https://goreleaser.com/customization/docker/
 func DockerImage(imagePrefixes []string, dist, arch, armVersion string) config.Docker {
-	dockerArchName := archName(arch, armVersion)
+	dockerArchName := arch
 	var imageTemplates []string
 	for _, prefix := range imagePrefixes {
 		dockerArchTag := strings.ReplaceAll(dockerArchName, "/", "")
@@ -215,42 +149,16 @@ func DockerManifests(imagePrefixes, dists []string) (r []config.DockerManifest) 
 // DockerManifest configures goreleaser to build a multi-arch container image manifest.
 // https://goreleaser.com/customization/docker_manifest/
 func DockerManifest(prefix, version, dist string) config.DockerManifest {
-	var imageTemplates []string
-	for _, arch := range Architectures {
-		switch arch {
-		case ArmArch:
-			for _, armVers := range ArmVersions {
-				dockerArchTag := strings.ReplaceAll(archName(arch, armVers), "/", "")
-				imageTemplates = append(
-					imageTemplates,
-					fmt.Sprintf("%s/%s:%s-%s", prefix, imageName(dist), version, dockerArchTag),
-				)
-			}
-		default:
-			imageTemplates = append(
-				imageTemplates,
-				fmt.Sprintf("%s/%s:%s-%s", prefix, imageName(dist), version, arch),
-			)
-		}
-	}
-
 	return config.DockerManifest{
-		NameTemplate:   fmt.Sprintf("%s/%s:%s", prefix, imageName(dist), version),
-		ImageTemplates: imageTemplates,
+		NameTemplate: fmt.Sprintf("%s/%s:%s", prefix, imageName(dist), version),
+		ImageTemplates: []string{
+			// Only support amd64 for Docker images.
+			fmt.Sprintf("%s/%s:%s-%s", prefix, imageName(dist), version, "amd64"),
+		},
 	}
 }
 
 // imageName translates a distribution name to a container image name.
 func imageName(dist string) string {
 	return strings.Replace(dist, "otelcol", "opentelemetry-collector", 1)
-}
-
-// archName translates architecture to docker platform names.
-func archName(arch, armVersion string) string {
-	switch arch {
-	case ArmArch:
-		return fmt.Sprintf("%s/v%s", arch, armVersion)
-	default:
-		return arch
-	}
 }
